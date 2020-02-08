@@ -3,12 +3,12 @@
 package server
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/spin-org/thermomatic/internal/client"
@@ -71,10 +71,10 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 
-	var out bytes.Buffer
+	var out []byte
+	var r client.Reading
+	var readingBuf [40]byte
 	for {
-		var r client.Reading
-		var readingBuf [40]byte
 		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		if err := readFullBuf(conn, readingBuf[:]); err != nil {
 			if err == io.EOF {
@@ -90,9 +90,24 @@ func (s *Server) handleConn(conn net.Conn) {
 			log.Printf("Error decoding client[%v] reading", conn.RemoteAddr())
 			return
 		}
-		fmt.Fprintf(&out, "%d,%d,%g,%g,%g,%g,%g\n", timestamp.UnixNano(), code,
-			r.Temperature, r.Altitude, r.Latitude, r.Longitude, r.BatteryLevel)
-		s.output.Write(out.Bytes())
-		out.Reset()
+		// Normally fmt.{S,F}printf would be more convenient, but they cause
+		// their arguments to escape to the heap. We can avoid allocations by
+		// using strconv.Append* methods.
+		out = out[:0]
+		out = strconv.AppendInt(out, timestamp.UnixNano(), 10)
+		out = append(out, ',')
+		out = strconv.AppendUint(out, code, 10)
+		out = append(out, ',')
+		out = strconv.AppendFloat(out, r.Temperature, 'g', -1, 64)
+		out = append(out, ',')
+		out = strconv.AppendFloat(out, r.Altitude, 'g', -1, 64)
+		out = append(out, ',')
+		out = strconv.AppendFloat(out, r.Latitude, 'g', -1, 64)
+		out = append(out, ',')
+		out = strconv.AppendFloat(out, r.Longitude, 'g', -1, 64)
+		out = append(out, ',')
+		out = strconv.AppendFloat(out, r.BatteryLevel, 'g', -1, 64)
+		out = append(out, '\n')
+		s.output.Write(out)
 	}
 }
