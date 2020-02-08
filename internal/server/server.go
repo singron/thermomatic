@@ -1,4 +1,5 @@
-// TODO: document the package.
+// Package server defines a TCP server that accepts readings from incoming
+// connections and prints them to stdout.
 package server
 
 import (
