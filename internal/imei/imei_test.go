@@ -1,9 +1,8 @@
 package imei
 
 import (
-	"testing"
-	//"github.com/spin-org/thermomatic/internal/common"
 	"runtime"
+	"testing"
 )
 
 func TestDecode(t *testing.T) {
