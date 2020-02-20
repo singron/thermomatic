@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/spin-org/thermomatic/internal/client"
@@ -17,7 +18,10 @@ import (
 
 // Server will accept and handle connections.
 type Server struct {
-	lis net.Listener
+	lis *net.TCPListener
+
+	wg   sync.WaitGroup
+	outM sync.Mutex
 
 	// Override these for testing
 
@@ -26,7 +30,7 @@ type Server struct {
 }
 
 // New returns a Server that accepts from lis and writes to os.Stdout.
-func New(lis net.Listener) *Server {
+func New(lis *net.TCPListener) *Server {
 	return &Server{lis: lis, output: os.Stdout, timeNow: time.Now}
 }
 
@@ -34,15 +38,16 @@ func New(lis net.Listener) *Server {
 // error.
 func (s *Server) Serve() error {
 	for {
-		conn, err := s.lis.Accept()
+		conn, err := s.lis.AcceptTCP()
 		if err != nil {
 			return fmt.Errorf("server: accept: %w", err)
 		}
+		s.wg.Add(1)
 		go s.handleConn(conn)
 	}
 }
 
-func readFullBuf(conn net.Conn, buf []byte) error {
+func readFullBuf(conn *net.TCPConn, buf []byte) error {
 	n := 0
 	for n < len(buf) {
 		c, err := conn.Read(buf[n:])
@@ -56,18 +61,20 @@ func readFullBuf(conn net.Conn, buf []byte) error {
 
 // handleConn will handle conn until there is an error. handleConn will close
 // the connection before returning.
-func (s *Server) handleConn(conn net.Conn) {
+func (s *Server) handleConn(conn *net.TCPConn) {
+	defer s.wg.Done()
 	defer conn.Close()
-	log.Printf("Accepted client[%v]", conn.RemoteAddr())
+	addr := conn.RemoteAddr().String()
+	log.Printf("Accepted client[%v]", addr)
 	var loginBuf [15]byte
 	conn.SetReadDeadline(time.Now().Add(time.Second))
 	if err := readFullBuf(conn, loginBuf[:]); err != nil {
-		log.Printf("Error reading client[%v] login: %v", conn.RemoteAddr(), err)
+		log.Printf("Error reading client[%v] login: %v", addr, err)
 		return
 	}
-	code, err := imei.Decode(loginBuf[:])
+	_, err := imei.Decode(loginBuf[:])
 	if err != nil {
-		log.Printf("Error decoding client[%v] login: %v", conn.RemoteAddr(), err)
+		log.Printf("Error decoding client[%v] login: %v", addr, err)
 		return
 	}
 
@@ -79,15 +86,15 @@ func (s *Server) handleConn(conn net.Conn) {
 		if err := readFullBuf(conn, readingBuf[:]); err != nil {
 			if err == io.EOF {
 				// Probably a normal closure.
-				log.Printf("Connection closed for client[%v]", conn.RemoteAddr())
+				log.Printf("Connection closed for client[%v]", addr)
 				return
 			}
-			log.Printf("Error reading client[%v] reading: %v", conn.RemoteAddr(), err)
+			log.Printf("Error reading client[%v] reading: %v", addr, err)
 			return
 		}
 		timestamp := s.timeNow()
 		if ok := r.Decode(readingBuf[:]); !ok {
-			log.Printf("Error decoding client[%v] reading", conn.RemoteAddr())
+			log.Printf("Error decoding client[%v] reading", addr)
 			return
 		}
 		// Normally fmt.{S,F}printf would be more convenient, but they cause
@@ -96,7 +103,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		out = out[:0]
 		out = strconv.AppendInt(out, timestamp.UnixNano(), 10)
 		out = append(out, ',')
-		out = strconv.AppendUint(out, code, 10)
+		out = append(out, loginBuf[:]...)
 		out = append(out, ',')
 		out = strconv.AppendFloat(out, r.Temperature, 'g', -1, 64)
 		out = append(out, ',')
@@ -108,6 +115,8 @@ func (s *Server) handleConn(conn net.Conn) {
 		out = append(out, ',')
 		out = strconv.AppendFloat(out, r.BatteryLevel, 'g', -1, 64)
 		out = append(out, '\n')
+		s.outM.Lock()
 		s.output.Write(out)
+		s.outM.Unlock()
 	}
 }
